@@ -16,14 +16,17 @@ type CenterTab = 'code' | 'graph'
 export function MainLayout(): JSX.Element {
   const [centerTab, setCenterTab] = useState<CenterTab>('code')
   const [rightPanelVisible, setRightPanelVisible] = useState(true)
-  const { viewMode, setViewMode, projectPath } = useFileStore()
+  const { viewMode, setViewMode, projectPath, docsPath: fileStoreDocsPath } = useFileStore()
   const {
     activeDocContent,
     selectedDirSummary,
     setDocsBasePath,
     setProjectPath: setEditorProjectPath
   } = useEditorStore()
-  const { status: docGenStatus, docsPath } = useDocStore()
+  const { status: docGenStatus, docsPath: docStoreDocsPath } = useDocStore()
+
+  // 综合判断 docsPath：docStore（当前会话生成的）或 fileStore（已有的 .docs 目录）
+  const effectiveDocsPath = docStoreDocsPath || fileStoreDocsPath
 
   // 同步 projectPath 到 editorStore
   useEffect(() => {
@@ -32,22 +35,33 @@ export function MainLayout(): JSX.Element {
 
   // 当文档生成开始时，设置 docsBasePath（这样生成过程中也能查看已生成的文档）
   useEffect(() => {
-    if (docsPath) {
-      setDocsBasePath(docsPath)
+    if (effectiveDocsPath) {
+      setDocsBasePath(effectiveDocsPath)
     }
-  }, [docsPath, setDocsBasePath])
+  }, [effectiveDocsPath, setDocsBasePath])
 
   // 当文档生成完成时，自动启用分屏模式
   useEffect(() => {
-    if (docGenStatus === 'completed' && docsPath) {
+    if (docGenStatus === 'completed' && docStoreDocsPath) {
       setViewMode('code-and-docs')
     }
-  }, [docGenStatus, docsPath, setViewMode])
+  }, [docGenStatus, docStoreDocsPath, setViewMode])
+
+  // 当打开的项目已有文档目录时，自动启用分屏模式
+  useEffect(() => {
+    if (fileStoreDocsPath && docGenStatus === 'idle') {
+      setViewMode('code-and-docs')
+    }
+  }, [fileStoreDocsPath, docGenStatus, setViewMode])
 
   // 检查是否有文档可显示
-  // 允许在生成过程中查看已生成的文档
+  // 1. 当前会话正在生成/已生成/已取消 → 可显示
+  // 2. 项目中已有 .docs 目录（上次生成的文档）→ 也可显示
   const hasDocContent = activeDocContent !== null || selectedDirSummary !== null
-  const canShowDocs = docsPath !== null && (docGenStatus === 'running' || docGenStatus === 'completed' || docGenStatus === 'cancelled')
+  const canShowDocs = effectiveDocsPath !== null && (
+    docGenStatus === 'running' || docGenStatus === 'completed' || docGenStatus === 'cancelled'
+    || fileStoreDocsPath !== null  // 已有文档目录时也允许查看
+  )
 
   return (
     <div className="h-screen w-screen flex flex-col bg-[#1e1e1e]">

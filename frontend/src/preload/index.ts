@@ -23,6 +23,13 @@ interface DirectoryEntry {
   type: 'file' | 'directory'
 }
 
+// 最近项目类型
+interface RecentProject {
+  path: string
+  name: string
+  lastOpened: number
+}
+
 // 自定义API
 const api = {
   // 文件系统操作
@@ -41,6 +48,16 @@ const api = {
   // 应用信息
   getBackendPort: (): Promise<number> =>
     ipcRenderer.invoke('app:getBackendPort'),
+
+  // 最近项目
+  getRecentProjects: (): Promise<RecentProject[]> =>
+    ipcRenderer.invoke('app:getRecentProjects'),
+
+  addRecentProject: (projectPath: string): Promise<RecentProject[]> =>
+    ipcRenderer.invoke('app:addRecentProject', projectPath),
+
+  removeRecentProject: (projectPath: string): Promise<RecentProject[]> =>
+    ipcRenderer.invoke('app:removeRecentProject', projectPath),
 
   // 平台信息
   platform: process.platform

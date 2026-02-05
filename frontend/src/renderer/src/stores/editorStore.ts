@@ -201,10 +201,10 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
           .replace(/\\/g, '/')
       }
 
-      // 目录总结使用 _summary.md
+      // 目录总结使用 _dir_summary.md
       const summaryPath = relativePath
-        ? `${docsBasePath}/${relativePath}/_summary.md`.replace(/\\/g, '/')
-        : `${docsBasePath}/_summary.md`.replace(/\\/g, '/')
+        ? `${docsBasePath}/${relativePath}/_dir_summary.md`.replace(/\\/g, '/')
+        : `${docsBasePath}/_dir_summary.md`.replace(/\\/g, '/')
 
       console.log('[loadDirSummary] Looking for summary at:', summaryPath)
 

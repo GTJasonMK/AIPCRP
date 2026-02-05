@@ -7,6 +7,13 @@ export interface FileTreeNode {
   children?: FileTreeNode[]
 }
 
+// 最近项目
+export interface RecentProject {
+  path: string
+  name: string
+  lastOpened: number
+}
+
 // 视图模式：仅源码 / 源码+文档并排
 export type ViewMode = 'code-only' | 'code-and-docs'
 
@@ -16,6 +23,9 @@ interface FileStore {
   fileTree: FileTreeNode[]
   expandedPaths: Set<string>
   isLoading: boolean
+
+  // 最近项目
+  recentProjects: RecentProject[]
 
   // 文档相关状态
   docsPath: string | null
@@ -33,6 +43,9 @@ interface FileStore {
   setFileTree: (tree: FileTreeNode[]) => void
   toggleExpanded: (path: string) => void
   loadProject: () => Promise<void>
+  openProjectByPath: (projectPath: string) => Promise<void>
+  loadRecentProjects: () => Promise<void>
+  removeRecentProject: (projectPath: string) => Promise<void>
 
   // 文档相关动作
   setDocsPath: (path: string | null) => void
@@ -71,6 +84,8 @@ export const useFileStore = create<FileStore>((set, get) => ({
   expandedPaths: new Set(),
   isLoading: false,
 
+  recentProjects: [],
+
   docsPath: null,
   docsTree: [],
   docsExpandedPaths: new Set(),
@@ -99,32 +114,63 @@ export const useFileStore = create<FileStore>((set, get) => ({
     try {
       const selectedPath = await window.api.selectDirectory()
       if (selectedPath) {
-        set({ projectPath: selectedPath })
-        const tree = await window.api.getFileTree(selectedPath)
-
-        // 调试：打印顶层目录
-        console.log('[fileStore] loadProject - top level items:', tree.map(n => ({ name: n.name, type: n.type })))
-
-        // 检查是否存在 .docs 目录（在过滤前检查）
-        const docsFolder = tree.find(node => node.type === 'directory' && node.name === DOCS_FOLDER_NAME)
-        console.log('[fileStore] loadProject - docsFolder found:', docsFolder?.path || 'not found')
-
-        if (docsFolder) {
-          // 存在已生成的文档目录，设置 docsPath
-          set({ docsPath: docsFolder.path })
-        } else {
-          // 清除之前的文档路径
-          set({ docsPath: null })
-        }
-
-        // 过滤掉 .docs 目录，使其不在 Source 栏显示
-        const filteredTree = filterDocsFolder(tree)
-        set({ fileTree: filteredTree, expandedPaths: new Set() })
+        // 复用 openProjectByPath 逻辑
+        await get().openProjectByPath(selectedPath)
       }
     } catch (error) {
       console.error('加载项目失败:', error)
     } finally {
       set({ isLoading: false })
+    }
+  },
+
+  openProjectByPath: async (projectPath: string) => {
+    set({ isLoading: true })
+    try {
+      set({ projectPath })
+      const tree = await window.api.getFileTree(projectPath)
+
+      console.log('[fileStore] openProjectByPath - top level items:', tree.map(n => ({ name: n.name, type: n.type })))
+
+      // 检查是否存在 .docs 目录（在过滤前检查）
+      const docsFolder = tree.find(node => node.type === 'directory' && node.name === DOCS_FOLDER_NAME)
+      console.log('[fileStore] openProjectByPath - docsFolder found:', docsFolder?.path || 'not found')
+
+      if (docsFolder) {
+        set({ docsPath: docsFolder.path })
+      } else {
+        set({ docsPath: null })
+      }
+
+      // 过滤掉 .docs 目录，使其不在 Source 栏显示
+      const filteredTree = filterDocsFolder(tree)
+      set({ fileTree: filteredTree, expandedPaths: new Set() })
+
+      // 记录到最近项目列表
+      const updatedProjects = await window.api.addRecentProject(projectPath)
+      set({ recentProjects: updatedProjects })
+    } catch (error) {
+      console.error('打开项目失败:', error)
+    } finally {
+      set({ isLoading: false })
+    }
+  },
+
+  loadRecentProjects: async () => {
+    try {
+      const projects = await window.api.getRecentProjects()
+      set({ recentProjects: projects })
+    } catch (error) {
+      console.error('加载最近项目失败:', error)
+    }
+  },
+
+  removeRecentProject: async (projectPath: string) => {
+    try {
+      const updatedProjects = await window.api.removeRecentProject(projectPath)
+      set({ recentProjects: updatedProjects })
+    } catch (error) {
+      console.error('移除最近项目失败:', error)
     }
   },
 

@@ -19,12 +19,21 @@ interface DirectoryEntry {
   type: 'file' | 'directory'
 }
 
+interface RecentProject {
+  path: string
+  name: string
+  lastOpened: number
+}
+
 interface Api {
   selectDirectory: () => Promise<string | null>
   readDirectory: (dirPath: string) => Promise<DirectoryEntry[]>
   readFile: (filePath: string) => Promise<FileInfo>
   getFileTree: (rootPath: string) => Promise<FileTreeNode[]>
   getBackendPort: () => Promise<number>
+  getRecentProjects: () => Promise<RecentProject[]>
+  addRecentProject: (projectPath: string) => Promise<RecentProject[]>
+  removeRecentProject: (projectPath: string) => Promise<RecentProject[]>
   platform: NodeJS.Platform
 }
 

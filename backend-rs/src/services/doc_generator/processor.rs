@@ -275,9 +275,12 @@ impl LevelProcessor {
                     // 获取信号量许可
                     let _permit = semaphore.acquire().await.unwrap();
 
-                    // 检查是否已取消
-                    if task.read().await.status == TaskStatus::Cancelled {
-                        return;
+                    // 检查是否已取消或已失败（快速失败机制）
+                    {
+                        let t = task.read().await;
+                        if t.status == TaskStatus::Cancelled || t.status == TaskStatus::Failed {
+                            return;
+                        }
                     }
 
                     match node_task {
@@ -300,9 +303,14 @@ impl LevelProcessor {
             })
             .await;
 
-        // 检查是否被取消
-        if task.read().await.status == TaskStatus::Cancelled {
+        // 检查是否被取消或失败
+        let task_guard = task.read().await;
+        if task_guard.status == TaskStatus::Cancelled {
             return Err(ProcessorError::Cancelled);
+        }
+        if task_guard.status == TaskStatus::Failed {
+            let error_msg = task_guard.error.clone().unwrap_or_else(|| "Unknown error".to_string());
+            return Err(ProcessorError::GeneratorError(error_msg));
         }
 
         Ok(())
@@ -323,8 +331,8 @@ impl LevelProcessor {
         relative_path: String,
         path: PathBuf,
     ) {
-        // 检查是否已完成（断点续传）
-        if checkpoint.read().await.is_file_completed(&relative_path) {
+        // 检查是否已完成（断点续传）- 验证文档文件实际存在
+        if checkpoint.write().await.verify_file_completed(&relative_path).await {
             info!("Skipping completed file: {}", relative_path);
             let _ = progress_tx.send(WsDocMessage::FileCompleted {
                 path: relative_path.clone(),
@@ -414,7 +422,8 @@ impl LevelProcessor {
                         }
                     }
                     Err(e) => {
-                        error!("Failed to save document {}: {}", relative_path, e);
+                        let error_msg = format!("Failed to save document {}: {}", relative_path, e);
+                        error!("{}", error_msg);
                         {
                             let mut root_guard = root.write().await;
                             update_node_status_recursive(
@@ -425,12 +434,18 @@ impl LevelProcessor {
                                 true,
                             );
                         }
-                        task.write().await.stats.failed_count += 1;
+                        // 设置任务为失败状态，触发快速失败
+                        {
+                            let mut t = task.write().await;
+                            t.fail(error_msg.clone());
+                        }
+                        let _ = progress_tx.send(WsDocMessage::Error { message: error_msg });
                     }
                 }
             }
             Err(e) => {
-                error!("Failed to analyze file {}: {}", relative_path, e);
+                let error_msg = format!("Failed to analyze file {}: {}", relative_path, e);
+                error!("{}", error_msg);
                 {
                     let mut root_guard = root.write().await;
                     update_node_status_recursive(
@@ -441,7 +456,12 @@ impl LevelProcessor {
                         true,
                     );
                 }
-                task.write().await.stats.failed_count += 1;
+                // 设置任务为失败状态，触发快速失败
+                {
+                    let mut t = task.write().await;
+                    t.fail(error_msg.clone());
+                }
+                let _ = progress_tx.send(WsDocMessage::Error { message: error_msg });
             }
         }
 
@@ -463,8 +483,8 @@ impl LevelProcessor {
         relative_path: String,
         path: PathBuf,
     ) {
-        // 检查是否已完成
-        if checkpoint.read().await.is_dir_completed(&relative_path) {
+        // 检查是否已完成（断点续传）- 验证文档文件实际存在
+        if checkpoint.write().await.verify_dir_completed(&relative_path).await {
             info!("Skipping completed directory: {}", relative_path);
             let _ = progress_tx.send(WsDocMessage::DirCompleted {
                 path: relative_path.clone(),
@@ -564,22 +584,34 @@ impl LevelProcessor {
                         task.write().await.stats.processed_dirs += 1;
                     }
                     Err(e) => {
-                        error!("Failed to save directory document {}: {}", relative_path, e);
+                        let error_msg = format!("Failed to save directory document {}: {}", relative_path, e);
+                        error!("{}", error_msg);
                         {
                             let mut root_guard = root.write().await;
                             update_node_status_recursive(&mut root_guard, &relative_path, NodeStatus::Failed, None, false);
                         }
-                        task.write().await.stats.failed_count += 1;
+                        // 设置任务为失败状态，触发快速失败
+                        {
+                            let mut t = task.write().await;
+                            t.fail(error_msg.clone());
+                        }
+                        let _ = progress_tx.send(WsDocMessage::Error { message: error_msg });
                     }
                 }
             }
             Err(e) => {
-                error!("Failed to generate directory summary {}: {}", relative_path, e);
+                let error_msg = format!("Failed to generate directory summary {}: {}", relative_path, e);
+                error!("{}", error_msg);
                 {
                     let mut root_guard = root.write().await;
                     update_node_status_recursive(&mut root_guard, &relative_path, NodeStatus::Failed, None, false);
                 }
-                task.write().await.stats.failed_count += 1;
+                // 设置任务为失败状态，触发快速失败
+                {
+                    let mut t = task.write().await;
+                    t.fail(error_msg.clone());
+                }
+                let _ = progress_tx.send(WsDocMessage::Error { message: error_msg });
             }
         }
 
@@ -609,22 +641,22 @@ impl LevelProcessor {
                 stats: task.read().await.stats.clone(),
             });
 
-            match self
+            let content = self
                 .doc_generator
                 .generate_readme(&project_name, &project_path, &all_documents, &self.llm_client, &self.model)
                 .await
-            {
-                Ok(content) => {
-                    if let Err(e) = self.doc_generator.save_readme(&project_name, &content).await {
-                        error!("Failed to save README: {}", e);
-                    } else {
-                        self.checkpoint.write().await.mark_readme_completed();
-                    }
-                }
-                Err(e) => {
-                    error!("Failed to generate README: {}", e);
-                }
-            }
+                .map_err(|e| {
+                    let error_msg = format!("Failed to generate README: {}", e);
+                    let _ = self.progress_tx.send(WsDocMessage::Error { message: error_msg.clone() });
+                    ProcessorError::GeneratorError(error_msg)
+                })?;
+
+            self.doc_generator.save_readme(&project_name, &content).await.map_err(|e| {
+                let error_msg = format!("Failed to save README: {}", e);
+                let _ = self.progress_tx.send(WsDocMessage::Error { message: error_msg.clone() });
+                ProcessorError::GeneratorError(error_msg)
+            })?;
+            self.checkpoint.write().await.mark_readme_completed();
         }
 
         // 生成阅读指南
@@ -636,7 +668,7 @@ impl LevelProcessor {
                 stats: task.read().await.stats.clone(),
             });
 
-            match self
+            let content = self
                 .doc_generator
                 .generate_reading_guide(
                     &project_name,
@@ -646,18 +678,18 @@ impl LevelProcessor {
                     &self.model,
                 )
                 .await
-            {
-                Ok(content) => {
-                    if let Err(e) = self.doc_generator.save_reading_guide(&project_name, &content).await {
-                        error!("Failed to save reading guide: {}", e);
-                    } else {
-                        self.checkpoint.write().await.mark_reading_guide_completed();
-                    }
-                }
-                Err(e) => {
-                    error!("Failed to generate reading guide: {}", e);
-                }
-            }
+                .map_err(|e| {
+                    let error_msg = format!("Failed to generate reading guide: {}", e);
+                    let _ = self.progress_tx.send(WsDocMessage::Error { message: error_msg.clone() });
+                    ProcessorError::GeneratorError(error_msg)
+                })?;
+
+            self.doc_generator.save_reading_guide(&project_name, &content).await.map_err(|e| {
+                let error_msg = format!("Failed to save reading guide: {}", e);
+                let _ = self.progress_tx.send(WsDocMessage::Error { message: error_msg.clone() });
+                ProcessorError::GeneratorError(error_msg)
+            })?;
+            self.checkpoint.write().await.mark_reading_guide_completed();
         }
 
         // 聚合项目级图谱
@@ -669,11 +701,12 @@ impl LevelProcessor {
                 stats: task.read().await.stats.clone(),
             });
 
-            if let Err(e) = self.aggregate_project_graph(&project_name).await {
-                error!("Failed to aggregate project graph: {}", e);
-            } else {
-                self.checkpoint.write().await.mark_project_graph_completed();
-            }
+            self.aggregate_project_graph(&project_name).await.map_err(|e| {
+                let error_msg = format!("Failed to aggregate project graph: {}", e);
+                let _ = self.progress_tx.send(WsDocMessage::Error { message: error_msg.clone() });
+                e
+            })?;
+            self.checkpoint.write().await.mark_project_graph_completed();
         }
 
         // 保存断点

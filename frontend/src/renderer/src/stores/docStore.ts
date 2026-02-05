@@ -116,7 +116,7 @@ function buildDocsTree(
 
       // 只添加有子节点的目录
       if (children.length > 0) {
-        const docPath = `${normalizedDocsBasePath}/${relativePath}/_summary.md`
+        const docPath = `${normalizedDocsBasePath}/${relativePath}/_dir_summary.md`
 
         // 建立相对路径映射
         relativeToSourceMap.set(relativePath, node.path)

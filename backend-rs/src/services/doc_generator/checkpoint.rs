@@ -264,14 +264,80 @@ impl CheckpointService {
         self.data.project_graph_completed = true;
     }
 
-    /// 检查文件是否已完成
+    /// 检查文件是否已完成（仅检查记录，不验证文件存在）
     pub fn is_file_completed(&self, relative_path: &str) -> bool {
         self.data.completed_files.contains(relative_path)
     }
 
-    /// 检查目录是否已完成
+    /// 检查目录是否已完成（仅检查记录，不验证文件存在）
     pub fn is_dir_completed(&self, relative_path: &str) -> bool {
         self.data.completed_dirs.contains(relative_path)
+    }
+
+    /// 验证文件是否真正完成（检查记录且验证文档文件存在）
+    ///
+    /// 如果记录表示已完成但文档文件不存在，则清除该记录并返回 false
+    pub async fn verify_file_completed(&mut self, relative_path: &str) -> bool {
+        if !self.data.completed_files.contains(relative_path) {
+            return false;
+        }
+
+        // 获取文档路径
+        let doc_key = format!("file:{}", relative_path);
+        if let Some(doc_path) = self.doc_path_map.get(&doc_key).cloned() {
+            let path = Path::new(&doc_path);
+            // 验证文件存在且非空
+            if path.exists() {
+                if let Ok(metadata) = fs::metadata(path).await {
+                    if metadata.len() > 0 {
+                        return true;
+                    }
+                }
+            }
+            // 文件不存在或为空，清除记录
+            info!("Doc file missing or empty, clearing checkpoint: {}", doc_path);
+            self.data.completed_files.remove(relative_path);
+            self.doc_path_map.remove(&doc_key);
+        } else {
+            // 没有文档路径记录，清除完成标记
+            info!("Doc path not found in map, clearing checkpoint for: {}", relative_path);
+            self.data.completed_files.remove(relative_path);
+        }
+
+        false
+    }
+
+    /// 验证目录是否真正完成（检查记录且验证文档文件存在）
+    ///
+    /// 如果记录表示已完成但文档文件不存在，则清除该记录并返回 false
+    pub async fn verify_dir_completed(&mut self, relative_path: &str) -> bool {
+        if !self.data.completed_dirs.contains(relative_path) {
+            return false;
+        }
+
+        // 获取文档路径
+        let doc_key = format!("dir:{}", relative_path);
+        if let Some(doc_path) = self.doc_path_map.get(&doc_key).cloned() {
+            let path = Path::new(&doc_path);
+            // 验证文件存在且非空
+            if path.exists() {
+                if let Ok(metadata) = fs::metadata(path).await {
+                    if metadata.len() > 0 {
+                        return true;
+                    }
+                }
+            }
+            // 文件不存在或为空，清除记录
+            info!("Dir doc file missing or empty, clearing checkpoint: {}", doc_path);
+            self.data.completed_dirs.remove(relative_path);
+            self.doc_path_map.remove(&doc_key);
+        } else {
+            // 没有文档路径记录，清除完成标记
+            info!("Dir doc path not found in map, clearing checkpoint for: {}", relative_path);
+            self.data.completed_dirs.remove(relative_path);
+        }
+
+        false
     }
 
     /// 检查 README 是否已完成

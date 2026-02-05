@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-本文件为 Claude Code (claude.ai/code) 在此仓库中工作时提供指导。
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ## 项目概述
 
@@ -46,6 +46,10 @@ start.bat
 cd backend-rs
 cargo build --release
 ./target/release/backend-rs.exe
+# 或开发模式
+cargo run
+# 运行测试
+cargo test
 ```
 服务器监听：`127.0.0.1:8765`
 
@@ -55,6 +59,7 @@ cd frontend
 npm install
 npm run dev      # 开发模式
 npm run build    # 构建
+npm run build:win  # Windows 发行版
 ```
 
 ## 项目结构
@@ -98,6 +103,22 @@ npm run build    # 构建
 ## 配置
 
 API配置存储在后端可执行文件同级目录的 `config.json`，通过应用内设置界面修改。
+
+## API 端点
+
+| 方法 | 路径 | 描述 |
+|------|------|------|
+| GET | `/api/health` | 健康检查 |
+| GET/PUT | `/api/config` | 配置读取/更新 |
+| POST | `/api/config/test` | 测试 LLM 连接 |
+| POST | `/api/chat/suggest` | 获取建议问题 |
+| WS | `/ws/chat` | WebSocket 聊天 |
+| POST | `/api/graph/project` | 项目级知识图谱 |
+| POST | `/api/graph/module` | 模块级知识图谱 |
+| POST | `/api/docs/generate` | 启动文档生成 |
+| WS | `/ws/docs/{task_id}` | 文档生成进度推送 |
+| POST | `/api/docs/graph` | 获取项目 LLM 图谱 |
+| POST | `/api/docs/file-graph` | 获取单文件 LLM 图谱 |
 
 ## 开发规范
 
@@ -441,4 +462,230 @@ const LAYOUT_CONFIG = {
 - 层级分配用 contains 边建立树形结构
 - 交叉最小化用所有边类型计算重心
 - 无连接的节点放在层末尾，按字母顺序排列
+
+### 2026-02-06: 知识图谱布局与可读性优化（第2次优化）
+
+**问题描述：**
+原有布局虽然使用了 Dagre 库，但所有边权重相同、节点类型没有层级约束，导致：
+1. 不同类型的节点（file/class/function/method）混排，缺乏层次感
+2. 边的粗细和样式统一，不同关系类型难以区分
+3. contains 结构关系和 calls/imports 逻辑关系在视觉上没有主次之分
+4. 节点较多时无法快速识别某个节点的关联关系
+
+**解决方式：**
+
+1. **节点类型分层约束**
+   - 定义 `NODE_TYPE_RANK` 映射：file/module(0) > class/interface/struct/enum(1) > function/constant(2) > method(3)
+   - 在相邻层级间添加弱辅助边（weight=0.1）引导 Dagre 将同类型节点放在同一层
+
+2. **边权重分级**
+   - contains=10（最强，强制父子垂直排列），inherits/implements=5，imports=2，calls/depends=1
+   - contains 边 minlen=1（紧密排列），其他边 minlen=2（允许跨层）
+
+3. **边样式层次化**
+   - 逻辑关系（imports/calls/inherits）使用粗线（strokeWidth=2~2.5），颜色鲜明
+   - 结构关系（contains）使用细点线（strokeWidth=1, opacity=0.5），灰色淡化
+   - contains 边不显示标签和使用更小的箭头，减少视觉噪音
+
+4. **关联高亮交互**
+   - 悬停节点时淡化不相关的节点（opacity=0.15）和边（opacity=0.05）
+   - 使用 `baseNodesRef`/`baseEdgesRef` 保存原始数据，离开时恢复
+   - 过渡动画 0.15s ease
+
+5. **图例指示**
+   - 状态栏右侧添加边类型图例，显示 imports/calls/inherits/contains 的颜色和线型
+
+6. **Dagre 算法优化**
+   - 使用 `ranker: 'tight-tree'` 算法减少边交叉
+   - 边标签添加半透明背景避免与边线重叠
+
+**涉及文件：**
+- `frontend/src/renderer/src/components/graph/KnowledgeGraph.tsx`
+
+**反思：**
+第2次优化图谱布局。第1次实现了自定义 Sugiyama 算法但后来替换为 Dagre 库。Dagre 的优势在于内置了成熟的边交叉最小化，但需要通过 weight/minlen 参数和辅助边来表达节点类型层级约束。视觉层次的关键是将结构关系（contains）和逻辑关系（calls/imports）在样式上明确区分主次。
+
+### 2026-02-06: 已有文档的项目无法显示 Code + Docs 分屏
+
+**问题描述：**
+打开一个已有 `.docs/` 文件夹的项目时，无法同时查看代码和 LLM 解释文档。"Code + Docs" 按钮不显示，分屏模式无法启用。
+
+**根本原因（共发现2个问题）：**
+
+1. **`canShowDocs` 条件只检查 `docStore` 的状态**
+   `MainLayout.tsx` 中 `canShowDocs` 依赖 `docStore.docsPath` 和 `docStore.status`。但 `docStore` 只在当前会话启动文档生成时才会设置 `docsPath` 和更新 `status`。当用户打开已有文档的项目时，`fileStore.docsPath` 被正确设置（`loadProject()` 检测到 `.docs/` 目录），但 `docStore.docsPath` 为 `null`，`docStore.status` 为 `'idle'`。导致 `canShowDocs = false`，"Code + Docs" 按钮被隐藏。
+
+2. **`editorStore.docsBasePath` 未从 `fileStore` 同步**
+   `MainLayout` 只将 `docStore.docsPath` 同步到 `editorStore.docsBasePath`。已有文档的项目中 `docStore.docsPath` 为 `null`，所以 `editorStore.docsBasePath` 也为 `null`，导致 `loadDocForFile()` 无法找到文档文件。
+
+**解决方式：**
+
+1. **引入 `effectiveDocsPath`** - 综合 `docStore.docsPath`（当前会话生成）和 `fileStore.docsPath`（已有文档目录），取第一个非空值
+2. **修改 `canShowDocs` 条件** - 当 `fileStoreDocsPath` 存在时也允许显示文档，不再强制要求 `docGenStatus` 为特定值
+3. **同步 `effectiveDocsPath` 到 `editorStore.docsBasePath`** - 无论文档来源是当前生成还是已有目录，都设置 `docsBasePath`
+4. **自动启用分屏** - 当打开已有文档的项目（`fileStoreDocsPath` 非空且 `docGenStatus === 'idle'`）时，自动切换到 `code-and-docs` 模式
+
+**涉及文件：**
+- `frontend/src/renderer/src/components/layout/MainLayout.tsx`
+
+**反思：**
+三个 store（`fileStore`、`docStore`、`editorStore`）各自管理部分 `docsPath` 相关状态，但缺乏统一的来源：`fileStore.docsPath`（加载项目时检测）、`docStore.docsPath`（文档生成时设置）、`editorStore.docsBasePath`（用于文档加载）。应该在设计时考虑"项目已有文档"和"当前会话生成文档"两种场景的统一处理。
+
+### 2026-02-06: 文档生成假完成问题（文件未生成但状态显示完成）
+
+**问题描述：**
+文档生成过程中存在某些文件显示为"生成成功"但实际文件不存在的情况，导致后续打开文档时出现找不到文件的错误。
+
+**根本原因（共发现3个问题）：**
+
+1. **断点续传不验证文件实际存在**（最关键）
+   `checkpoint.rs` 中 `is_file_completed()` 仅检查路径是否在 `HashSet` 中，不验证对应的 `.md` 文件是否真正存在于磁盘上。如果上一次生成中断时断点已记录完成但文件写入失败（如磁盘满、权限问题、进程被杀），续传时会跳过该文件并发送 `FileCompleted` 消息，导致前端显示为完成。
+
+2. **LLM 空响应未验证**
+   `generator.rs` 中 `analyze_file()` 和 `summarize_directory()` 没有检查 LLM 返回内容是否为空。如果 LLM 返回空字符串（网络超时、token 限制、服务异常），空内容会被保存为文档并标记完成。
+
+3. **文件写入后未验证**
+   `save_document()` 在 `write_all()` 后直接返回 `Ok(())`，没有验证文件是否真正写入成功（存在且非空）。
+
+**解决方式：**
+
+1. **`checkpoint.rs` - 新增 `verify_file_completed()` 和 `verify_dir_completed()` 异步方法**
+   - 先检查记录是否存在
+   - 然后验证对应的文档文件是否存在且非空（通过 `fs::metadata` 检查文件大小）
+   - 如果文件不存在或为空，自动清除该记录（从 `completed_files`/`completed_dirs` 和 `doc_path_map` 中移除），返回 `false`
+
+2. **`processor.rs` - 断点检查改用验证方法**
+   - `process_single_file()` 中将 `checkpoint.read().await.is_file_completed()` 改为 `checkpoint.write().await.verify_file_completed().await`
+   - `process_single_dir()` 中同样改用 `checkpoint.write().await.verify_dir_completed().await`
+
+3. **`generator.rs` - LLM 响应内容验证**
+   - `analyze_file()` 中在获取 LLM 响应后检查 `result.content.trim().is_empty()`，为空则返回错误
+   - 解析后的 `doc_content` 也检查是否为空
+   - `summarize_directory()` 中添加相同的验证逻辑
+
+4. **`generator.rs` - 文件写入后验证**
+   - `save_document()` 中 `write_all()` 后通过 `fs::metadata()` 检查文件存在且 `len() > 0`
+
+**涉及文件：**
+- `backend-rs/src/services/doc_generator/checkpoint.rs`（新增 verify 方法）
+- `backend-rs/src/services/doc_generator/processor.rs`（改用 verify 方法）
+- `backend-rs/src/services/doc_generator/generator.rs`（LLM 响应验证 + 写入验证）
+
+**反思：**
+核心问题是"完成标记"和"文件实际存在"之间缺乏一致性保证。断点续传机制信任了历史记录但没有验证实际状态。正确的做法是在任何涉及"跳过已完成任务"的场景中，都要验证产出物确实存在。这是一种防御性编程实践：不信任缓存/记录，始终验证实际状态。
+
+### 2026-02-06: 实现文档生成失败即停止机制
+
+**问题描述：**
+原有的文档生成流程在某个文件/目录处理失败时只记录日志并继续处理，导致最终生成不完整的文档树。用户需要完整生成才能达到最佳效果。
+
+**解决方式：**
+
+实现"快速失败"（Fail-Fast）机制：任何文件或目录处理失败时立即停止整个生成流程。
+
+1. **`process_merged_batch` - 并发任务失败检测**
+   - 每个并发任务开始前检查 `TaskStatus::Failed`（除了原有的 `Cancelled`）
+   - 批处理完成后检查任务状态，如果是 `Failed` 则返回 `ProcessorError::GeneratorError`
+
+2. **`process_single_file` - 文件处理失败触发停止**
+   - LLM 分析失败时：调用 `task.fail(error_msg)` 设置任务状态为 Failed
+   - 文档保存失败时：同上
+   - 同时发送 `WsDocMessage::Error { message }` 通知前端
+
+3. **`process_single_dir` - 目录处理失败触发停止**
+   - 目录总结生成失败时：调用 `task.fail(error_msg)`
+   - 目录文档保存失败时：同上
+   - 同时发送 WebSocket 错误消息
+
+4. **`generate_final_docs` - 最终文档生成失败触发停止**
+   - README 生成/保存失败：返回 `ProcessorError::GeneratorError`
+   - 阅读指南生成/保存失败：同上
+   - 项目图谱聚合失败：同上
+   - 每个失败都发送 WebSocket 错误消息
+
+**涉及文件：**
+- `backend-rs/src/services/doc_generator/processor.rs`
+
+**技术要点：**
+- 使用 `TaskStatus::Failed` 作为全局停止信号
+- 并发任务通过检查任务状态实现协同停止
+- `task.fail()` 方法同时设置 `status` 和 `error` 字段
+- WebSocket 错误消息让前端能够及时显示失败原因
+- 断点机制保证失败后可以重新运行续传
+
+### 2026-02-06: 实现最近打开项目功能
+
+**需求描述：**
+用户希望能够记录最近打开的项目，方便快速重新打开。
+
+**实现方案：**
+
+1. **Electron 主进程** (`frontend/src/main/index.ts`)
+   - 使用 `app.getPath('userData')` 下的 `recent-projects.json` 文件持久化存储
+   - `RecentProject` 接口：path、name、lastOpened（Unix时间戳）
+   - `loadRecentProjects()` / `saveRecentProjects()` / `addRecentProject()` 存储函数
+   - 最多保留 10 个最近项目
+   - IPC 处理器：`app:getRecentProjects`、`app:addRecentProject`、`app:removeRecentProject`
+
+2. **预加载脚本** (`frontend/src/preload/index.ts`, `index.d.ts`)
+   - 暴露 `getRecentProjects()`、`addRecentProject()`、`removeRecentProject()` API
+
+3. **状态管理** (`frontend/src/renderer/src/stores/fileStore.ts`)
+   - 新增 `recentProjects` 状态
+   - 新增 `openProjectByPath(path)` 方法：加载项目并记录到最近列表
+   - 重构 `loadProject()` 复用 `openProjectByPath`
+   - 新增 `loadRecentProjects()` 和 `removeRecentProject()` 方法
+
+4. **工具栏 UI** (`frontend/src/renderer/src/components/layout/Toolbar.tsx`)
+   - "Open Project" 按钮拆分为左按钮（打开）+ 右按钮（下拉箭头）
+   - 下拉菜单显示最近项目列表：项目名、完整路径、相对时间
+   - 当前已打开的项目高亮显示
+   - 每个项目右侧有删除按钮（hover 时显示）
+   - 点击外部自动关闭下拉菜单
+
+**涉及文件：**
+- `frontend/src/main/index.ts`（存储函数 + IPC 处理器）
+- `frontend/src/preload/index.ts`（API 暴露）
+- `frontend/src/preload/index.d.ts`（类型声明）
+- `frontend/src/renderer/src/stores/fileStore.ts`（状态管理）
+- `frontend/src/renderer/src/components/layout/Toolbar.tsx`（UI）
+
+### 2026-02-06: 目录文档路径错误（_summary.md vs _dir_summary.md）
+
+**问题描述：**
+点击 DOCS 栏的目录时报错 `ENOENT: no such file or directory`，找不到 `_summary.md` 文件。
+
+**根本原因：**
+后端生成的目录总结文件名是 `_dir_summary.md`（在 `DocGenConfig` 中定义），但前端两处错误地硬编码为 `_summary.md`。
+
+**解决方式：**
+1. **`editorStore.ts`** 第205-207行：`_summary.md` → `_dir_summary.md`
+2. **`docStore.ts`** 第119行：`_summary.md` → `_dir_summary.md`
+
+**涉及文件：**
+- `frontend/src/renderer/src/stores/editorStore.ts`
+- `frontend/src/renderer/src/stores/docStore.ts`
+
+**反思：**
+文件名应该从配置或常量中统一获取，而不是在多处硬编码。前端有 `docPathMapper.ts` 中定义了 `DIR_SUMMARY_NAME = '_dir_summary.md'`，但其他地方没有使用这个常量。
+
+### 2026-02-06: 完善最近项目功能（自动打开+UI优化）
+
+**问题描述：**
+1. 启动应用时没有自动打开上次的项目
+2. 最近项目下拉按钮高度与主按钮不一致，视觉效果差
+
+**解决方式：**
+
+1. **自动打开上次项目** - 在 `Toolbar.tsx` 添加 useEffect：
+   - 使用 `hasAutoOpenedRef` 防止重复触发
+   - 当 `recentProjects` 加载完成且当前没有打开项目时，自动调用 `openProjectByPath(recentProjects[0].path)`
+
+2. **UI 优化** - 使用固定高度确保按钮一致：
+   - 主按钮和下拉箭头都使用 `h-[26px]` 固定高度
+   - 移除 `py-1` 改为 `flex items-center` 垂直居中
+   - 箭头图标从 `w-3.5 h-3.5` 调整为 `w-3 h-3`
+
+**涉及文件：**
+- `frontend/src/renderer/src/components/layout/Toolbar.tsx`
 

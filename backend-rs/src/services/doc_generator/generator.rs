@@ -110,8 +110,25 @@ impl DocumentGenerator {
             .await
             .map_err(|e| GeneratorError::LlmError(e.to_string()))?;
 
+        // 验证 LLM 响应非空
+        if result.content.trim().is_empty() {
+            return Err(GeneratorError::LlmError(format!(
+                "LLM returned empty response for file: {}",
+                node.relative_path
+            )));
+        }
+
         // 解析响应，分离文档内容和图谱数据
         let (doc_content, raw_graph) = self.parse_llm_response_raw(&result.content, &node.relative_path);
+
+        // 验证解析后的文档内容非空
+        if doc_content.trim().is_empty() {
+            return Err(GeneratorError::LlmError(format!(
+                "Parsed document content is empty for file: {}",
+                node.relative_path
+            )));
+        }
+
         let graph_data = raw_graph.map(|raw| FileGraphData::new(node.relative_path.clone(), raw));
 
         Ok(FileAnalysisResult {
@@ -307,8 +324,25 @@ impl DocumentGenerator {
             .await
             .map_err(|e| GeneratorError::LlmError(e.to_string()))?;
 
+        // 验证 LLM 响应非空
+        if result.content.trim().is_empty() {
+            return Err(GeneratorError::LlmError(format!(
+                "LLM returned empty response for directory: {}",
+                node.relative_path
+            )));
+        }
+
         // 解析响应，分离文档内容和图谱数据
         let (doc_content, raw_graph) = self.parse_llm_response_raw(&result.content, &node.relative_path);
+
+        // 验证解析后的文档内容非空
+        if doc_content.trim().is_empty() {
+            return Err(GeneratorError::LlmError(format!(
+                "Parsed document content is empty for directory: {}",
+                node.relative_path
+            )));
+        }
+
         let graph_data = raw_graph.map(|raw| DirGraphData::new(node.relative_path.clone(), raw));
 
         Ok(DirAnalysisResult {
@@ -506,6 +540,24 @@ impl DocumentGenerator {
         file.write_all(content.as_bytes())
             .await
             .map_err(|e| GeneratorError::IoError(path.to_path_buf(), e))?;
+
+        // 验证文件写入成功：检查文件存在且非空
+        match fs::metadata(path).await {
+            Ok(metadata) => {
+                if metadata.len() == 0 {
+                    return Err(GeneratorError::IoError(
+                        path.to_path_buf(),
+                        std::io::Error::new(
+                            std::io::ErrorKind::Other,
+                            "File was written but is empty"
+                        ),
+                    ));
+                }
+            }
+            Err(e) => {
+                return Err(GeneratorError::IoError(path.to_path_buf(), e));
+            }
+        }
 
         Ok(())
     }

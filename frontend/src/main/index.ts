@@ -9,6 +9,59 @@ import * as path from 'path'
 let mainWindow: BrowserWindow | null = null
 let backendProcess: ChildProcess | null = null
 const BACKEND_PORT = 8765
+const MAX_RECENT_PROJECTS = 10
+
+// 最近打开的项目
+interface RecentProject {
+  path: string
+  name: string
+  lastOpened: number // Unix 时间戳（毫秒）
+}
+
+// 获取最近项目列表的存储路径
+function getRecentProjectsPath(): string {
+  return path.join(app.getPath('userData'), 'recent-projects.json')
+}
+
+// 读取最近项目列表
+async function loadRecentProjects(): Promise<RecentProject[]> {
+  try {
+    const filePath = getRecentProjectsPath()
+    const content = await fs.readFile(filePath, 'utf-8')
+    const data = JSON.parse(content)
+    if (Array.isArray(data)) {
+      return data
+    }
+    return []
+  } catch {
+    return []
+  }
+}
+
+// 保存最近项目列表
+async function saveRecentProjects(projects: RecentProject[]): Promise<void> {
+  const filePath = getRecentProjectsPath()
+  await fs.writeFile(filePath, JSON.stringify(projects, null, 2), 'utf-8')
+}
+
+// 添加或更新最近项目
+async function addRecentProject(projectPath: string): Promise<RecentProject[]> {
+  const projects = await loadRecentProjects()
+  const name = path.basename(projectPath)
+  const now = Date.now()
+
+  // 移除已有的相同路径（如果存在）
+  const filtered = projects.filter(p => p.path !== projectPath)
+
+  // 添加到列表头部
+  filtered.unshift({ path: projectPath, name, lastOpened: now })
+
+  // 保留最近 N 个
+  const trimmed = filtered.slice(0, MAX_RECENT_PROJECTS)
+
+  await saveRecentProjects(trimmed)
+  return trimmed
+}
 
 // Directories to filter out
 const IGNORED_DIRS = ['.git', 'node_modules', '__pycache__', '.venv', 'venv',
@@ -230,6 +283,22 @@ function registerIpcHandlers(): void {
 
   // Get backend port
   ipcMain.handle('app:getBackendPort', () => BACKEND_PORT)
+
+  // 最近项目相关
+  ipcMain.handle('app:getRecentProjects', async () => {
+    return loadRecentProjects()
+  })
+
+  ipcMain.handle('app:addRecentProject', async (_, projectPath: string) => {
+    return addRecentProject(projectPath)
+  })
+
+  ipcMain.handle('app:removeRecentProject', async (_, projectPath: string) => {
+    const projects = await loadRecentProjects()
+    const filtered = projects.filter(p => p.path !== projectPath)
+    await saveRecentProjects(filtered)
+    return filtered
+  })
 }
 
 app.whenReady().then(() => {
