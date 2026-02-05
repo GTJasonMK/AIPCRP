@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(netstat:*)",
+      "Bash(findstr:*)",
+      "Bash(cmd /c \"netstat -ano | findstr :8765\")",
+      "Bash(powershell:*)",
+      "Bash(taskkill:*)",
+      "Bash(powershell.exe -NoProfile -Command \"Get-NetTCPConnection -LocalPort 8765 -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_OwningProcess; Stop-Process -Id $_OwningProcess -Force }\")",
+      "Bash(powershell.exe -NoProfile -Command \"netstat -ano | Select-String '':8765''\")",
+      "Bash(cargo check:*)",
+      "Bash(npm run typecheck:*)",
+      "Bash(npx tsc:*)"
+    ]
+  }
+}

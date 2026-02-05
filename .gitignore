@@ -1,0 +1,33 @@
+# 依赖目录
+node_modules/
+__pycache__/
+*.pyc
+.venv/
+venv/
+.uv/
+
+# 构建产物
+dist/
+out/
+build/
+
+# 开发工具
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# 日志和临时文件
+*.log
+storage/
+.DS_Store
+Thumbs.db
+
+# 环境配置
+.env
+.env.local
+
+# 测试
+coverage/
+.pytest_cache/
+backend-rs/target
